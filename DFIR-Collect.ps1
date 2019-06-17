@@ -3,12 +3,14 @@
    Get information about a Windows 10 system to perform a DFIR analysis.
 .DESCRIPTION
    On systems with a restricted script execution policy, run: PowerShell.exe -ExecutionPolicy UnRestricted -File .\dfircollect.ps1
+
+   This script needs at lesat PowerShell 2.0 (Windows 10)
 .PARAMETER EvidenceId
    A string identifying the evidence. The output directory and zip file will have this name. Default: "evidence"
 .PARAMETER ExportHKLM
    Export HKEY_LOCAL_MACHINE from the registry.
-.PARAMETER ListFiles
-   List files in all mounted file systems.
+.PARAMETER ExportMFT
+   Export the MFT of all partitions. RawCopy.exe must be present alongside this script.
 .PARAMETER CollectLogs
    Collect logs.
 .PARAMETER Complete
@@ -27,7 +29,7 @@
 param(
     [string]$EvidenceId="evidence",
     [switch]$ExportHKLM,
-    [switch]$ListFiles,
+    [switch]$ExportMFT,
     [switch]$CollectLogs,
     [switch]$Complete
 )
@@ -37,7 +39,7 @@ param(
 # If complete, activate these sections
 if ( $Complete ) {
     $ExportHKLM = $true
-    $ListFiles = $true
+    $ExportMFT = $true
     $CollectLogs = $true
 }
 
@@ -65,268 +67,252 @@ whoami /ALL >> METADATA
 # Alternate command
 # whoami /useraccount >> METADATA
 
+Function Prepare-Section {
+    <#
+    .DESCRIPTION
+    Prepare the environment to run a section
+    .PARAMETER Index
+    A string identifying the index of the section. For example: "01", "15"...
+    .PARAMETER Name
+    The description of the section.
+    .PARAMETER Run
+    Whether the section will be run.
+    .PARAMETER Log
+    A message to log run.
+    .NOTES
+    Returns the $Run parameter. Use in an If expression to run the commands of the section or not.
+
+    $SectionPreffix will be set to the preffix to add to output files. If it is a directory, it will be created.
+    #>
+    param(
+        [string]$Index='',
+        [string]$Name='',
+        [switch]$Run=$true,
+        [string]$Log=''
+    )
+    $SectionName = "$Index-$Name"
+    Set-Variable -Name "SectionPreffix" -Value "$Index-" -Scope Global
+    # mkdir $SectionPreffix | Out-Null
+    If ( $Log -eq '' ) {
+        If ( $Run ) {
+            Write-Host "($Index/$TotalSections) Running: $SectionName..."
+        } Else {
+            Write-Host "($Index/$TotalSections) Skipping: $SectionName." -ForegroundColor yellow
+        }
+    } Else {
+        If ( $Run ) {
+            Write-Host "($Index/$TotalSections) ${Log}: $SectionName..."
+        } Else {
+            Write-Host "($Index/$TotalSections) ${Log}: $SectionName." -ForegroundColor yellow
+        }
+    }
+    Return $Run
+}
+
 ####################### Machine and Operating system information
 
-$CurrentSection = "01"
-$CurrentSectionName = "$CurrentSection-Machine and Operating system information"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# Basic system information
-Get-CimInstance Win32_OperatingSystem | Export-Clixml $CurrentSectionName\OperatingSystem.xml
-# Windows product key
-(Get-WmiObject -query ‘select * from SoftwareLicensingService’).OA3xOriginalProductKey | Out-File $CurrentSectionName\OriginalProductKey.txt
+If ( Prepare-Section -Index "01" -Name "Machine and Operating system information" ) {
+    # Basic system information
+    Get-CimInstance Win32_OperatingSystem | Export-Clixml ${SectionPreffix}OperatingSystem.xml
+    # Windows product key
+    (Get-WmiObject -query ‘select * from SoftwareLicensingService’).OA3xOriginalProductKey | Out-File ${SectionPreffix}OriginalProductKey.txt
+}
 
 ####################### User accounts and current login information
 
-$CurrentSection = "02"
-$CurrentSectionName = "$CurrentSection-User accounts and current login information"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# information about the users locally registered in the system
-Get-WmiObject win32_useraccount | Export-Clixml $CurrentSectionName\Users.xml
-# Current users
-whoami /ALL > $CurrentSectionName\CurrentUser.txt
+If ( Prepare-Section -Index "02" -Name "User accounts and current login information" ) {
+    # information about the users locally registered in the system
+    Get-WmiObject win32_useraccount | Export-Clixml ${SectionPreffix}Users.xml
+    # Current users
+    whoami /ALL > ${SectionPreffix}CurrentUser.txt
+}
 
 ####################### Network
 
-$CurrentSection = "03"
-$CurrentSectionName = "$CurrentSection-Network configuration and connectivity information"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# ipconfig
-ipconfig /all >  $CurrentSectionName\ipconfig.txt
-# netstat
-netstat -nabo > $CurrentSectionName\NetStat.xml
-$netstat = netstat -nao
-$NetstatProcessed = New-Object System.Collections.Generic.List[System.Object]
-Foreach ( $conn in $netstat[4..$netstat.count] ) {
-    $data = $conn -replace '^\s+','' -split '\s+'
-    $element = @{
-        "Proto" = $data[0]
-        "Local IP" = $data[1]
-        "Remote IP" = $data[2]
-        "Status" = $data[3]
-        "Process PID" = $data[4]
-        "Process Name" = ((Get-process | Where-Object {$_.ID -eq $data[4]})).Name
-        "Process Path" = ((Get-process | Where-Object {$_.ID -eq $data[4]})).Path
-        "Process StartTime" = ((Get-process | Where-Object {$_.ID -eq $data[4]})).StartTime
-        "Process DLLs" = ((Get-process| Where-Object {$_.ID -eq $data[4]})).Modules |Select-Object @{Name='Modules';Expression={$_.filename -join'; '} }
+If ( Prepare-Section -Index "03" -Name "Network configuration and connectivity information" ) {
+    # Traditional commands
+    cmd /c "ipconfig /all >  ${SectionPreffix}ipconfig.txt"
+    cmd /c "netstat -nabo > ${SectionPreffix}netstat.txt"
+    cmd /c "ipconfig /displaydns > ${SectionPreffix}displaydns.txt"
+    cmd /c "route PRINT > ${SectionPreffix}routes.txt"
+    # netstat, parsing the output to include process information
+    $netstat = netstat -nao
+    $NetstatProcessed = New-Object System.Collections.Generic.List[System.Object]
+    Foreach ( $conn in $netstat[4..$netstat.count] ) {
+        $data = $conn -replace '^\s+','' -split '\s+'
+        $element = @{
+            "Proto" = $data[0]
+            "Local IP" = $data[1]
+            "Remote IP" = $data[2]
+            "Status" = $data[3]
+            "Process PID" = $data[4]
+            "Process Name" = ((Get-process | Where-Object {$_.ID -eq $data[4]})).Name
+            "Process Path" = ((Get-process | Where-Object {$_.ID -eq $data[4]})).Path
+            "Process StartTime" = ((Get-process | Where-Object {$_.ID -eq $data[4]})).StartTime
+            "Process DLLs" = ((Get-process| Where-Object {$_.ID -eq $data[4]})).Modules |Select-Object @{Name='Modules';Expression={$_.filename -join'; '} }
+        }
+        $NetstatProcessed.Add((New-Object -TypeName PSObject -Property $element))
     }
-    $NetstatProcessed.Add((New-Object -TypeName PSObject -Property $element))
+    $NetstatProcessed | Export-Clixml ${SectionPreffix}ProcessedNetStat.xml
+    # network adapters
+    Get-NetAdapter | Export-Clixml  ${SectionPreffix}NetAdapter.xml
+    # IP addresses
+    Get-NetIPAddress| Export-Clixml  ${SectionPreffix}NetIPAddress.xml    
+    # ARP
+    Get-NetNeighbor | Export-Clixml  ${SectionPreffix}NetNeighbor.xml
+    # network routes
+    Get-NetRoute | Export-Clixml  ${SectionPreffix}NetRoute.xml
 }
-$NetstatProcessed | Export-Clixml $CurrentSectionName\ProcessedNetStat.xml
-# network adapters
-Get-NetAdapter | Export-Clixml  $CurrentSectionName\NetAdapter.xml
-# IP addresses
-Get-NetIPAddress| Export-Clixml  $CurrentSectionName\NetIPAddress.xml    
-# ARP
-Get-NetNeighbor | Export-Clixml  $CurrentSectionName\NetNeighbor.xml
-# network routes
-Get-NetRoute | Export-Clixml  $CurrentSectionName\NetRoute.xml
 
 ####################### Antivirus
 
-$CurrentSection = "04"
-$CurrentSectionName = "$CurrentSection-Anti-Virus application status and related logs"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+Prepare-Section -Index "04" -Name "Anti-Virus application status and related logs" -Log 'Not implemented' -Run:$false | Out-Null
 
 ####################### Services, process and applications
 
-$CurrentSection = "05"
-$CurrentSectionName = "$CurrentSection-Startup applications"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# Services run when the system starts
-Get-CimInstance win32_service -Filter "startmode = 'auto'" | Export-Clixml $CurrentSectionName\StartupServices.xml
-# Applications run when the system starts
-Get-CimInstance Win32_StartupCommand | Export-Clixml $CurrentSectionName\StartupCommands.xml
+If ( Prepare-Section -Index "05" -Name "Startup applications" ) {
+    # Services run when the system starts
+    Get-CimInstance win32_service -Filter "startmode = 'auto'" | Export-Clixml ${SectionPreffix}StartupServices.xml
+    # Applications run when the system starts
+    Get-CimInstance Win32_StartupCommand | Export-Clixml ${SectionPreffix}StartupCommands.xml
+}
 
-$CurrentSection = "06"
-$CurrentSectionName = "$CurrentSection-Running process related information"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# Current processes
-Get-Process | Export-Clixml $CurrentSectionName\Process.xml
+If ( Prepare-Section -Index "06" -Name "Running process related information" ) {
+    # Current processes
+    Get-Process | Export-Clixml ${SectionPreffix}Process.xml
+}
 
-$CurrentSection = "07"
-$CurrentSectionName = "$CurrentSection-Running services related information"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# Current services
-Get-Service | Export-Clixml $CurrentSectionName\Service.xml
+If ( Prepare-Section -Index "07" -Name "Running services related information" ) {
+    # Current services
+    Get-Service | Export-Clixml ${SectionPreffix}Service.xml
+}
 
 ####################### Some not implemented sections
 
-$CurrentSection = "08"
-$CurrentSectionName = "$CurrentSection-Drivers installed and running"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "09"
-$CurrentSectionName = "$CurrentSection-DLLs created"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "10"
-$CurrentSectionName = "$CurrentSection-Open files"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "11"
-$CurrentSectionName = "$CurrentSection-Open shares"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+Prepare-Section -Index "08" -Name "Drivers installed and running" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "09" -Name "DLLs created" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "10" -Name "Open files" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "11" -Name "Open shares" -Log 'Not implemented' -Run:$false | Out-Null
 
 ####################### File systems
 
-$CurrentSection = "12"
-$CurrentSectionName = "$CurrentSection-Mapped drives"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# Information about all disks
-Get-Disk | Export-Clixml $CurrentSectionName\Disk.xml
-# Information about all partitions
-Get-Partition | Export-Clixml $CurrentSectionName\Partition.xml
-# shared folders, two ways (they are supposed to be equals)
-Get-WmiObject -class Win32_Share | Export-Clixml $CurrentSectionName\SharedFolders.xml
-Get-SmbShare | Export-Clixml $CurrentSectionName\SmbShare.xml
+If ( Prepare-Section -Index "12" -Name "Mapped drives" ) {
+    # Information about all disks
+    Get-Disk | Export-Clixml ${SectionPreffix}Disk.xml
+    # Information about all partitions
+    Get-Partition | Export-Clixml ${SectionPreffix}Partition.xml
+    # shared folders, two ways (they are supposed to be equals)
+    Get-WmiObject -class Win32_Share | Export-Clixml ${SectionPreffix}SharedFolders.xml
+    Get-SmbShare | Export-Clixml ${SectionPreffix}SmbShare.xml
+}
 
 ####################### Scheduled jobs
 
-$CurrentSection = "13"
-$CurrentSectionName = "$CurrentSection-Scheduled jobs"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+If ( Prepare-Section -Index "13" -Name "Scheduled jobs" ) {
+    Get-ScheduledTask | Export-Clixml  ${SectionPreffix}ScheduledTask.xml
+    Get-ScheduledJob | Export-Clixml  ${SectionPreffix}ScheduledJob.xml
+    # Traditional commands
+    cmd /c "schtasks /query > ${SectionPreffix}schtasks.txt"
+    cmd /c "at > ${SectionPreffix}at.txt"
+}
 
 ####################### Active network connections and related process
 
-$CurrentSection = "14"
-$CurrentSectionName = "$CurrentSection-Active network connections and related process"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# active networks
-Get-NetConnectionProfile | Export-Clixml  $CurrentSectionName\NetConnectionProfile.xml
-# TCP connections (established, listening)
-Get-NetTCPConnection | Export-Clixml  $CurrentSectionName\NetTCPConnection.xml
-# UDP listeres
-Get-NetUDPEndpoint | Export-Clixml  $CurrentSectionName\NetUDPEndpoint.xml
+If ( Prepare-Section -Index "14" -Name "Active network connections and related process" ) {
+    # active networks
+    Get-NetConnectionProfile | Export-Clixml  ${SectionPreffix}NetConnectionProfile.xml
+    # TCP connections (established, listening)
+    Get-NetTCPConnection | Export-Clixml  ${SectionPreffix}NetTCPConnection.xml
+    # UDP listeres
+    Get-NetUDPEndpoint | Export-Clixml  ${SectionPreffix}NetUDPEndpoint.xml
+}
 
 ####################### Hotfix
 
-$CurrentSection = "15"
-$CurrentSectionName = "$CurrentSection-Hotfixes applied"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-Get-HotFix | Export-Clixml $CurrentSectionName\Hotfix.xml
+If ( Prepare-Section -Index "15" -Name "Hotfix" ) {
+    Get-HotFix | Export-Clixml ${SectionPreffix}Hotfix.xml
+}
 
 ####################### Installed applications
 
-$CurrentSection = "16"
-$CurrentSectionName = "$CurrentSection-Installed applications"
-mkdir $CurrentSectionName | Out-Null
-Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-# Installed applications according to wmic
-# This list doesn't include "applets" in the starting menu, nor windows utilities such as the clock
-Get-WmiObject -Class Win32_Product | Export-Clixml $CurrentSectionName\InstalledApplications.xml
-# WARNING: you will find in the Internet references to this command.
-# Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Select-Object DisplayName, DisplayVersion, Publisher, InstallDate | Format-Table –AutoSize > C:\Users\Lori\Documents\InstalledPrograms\InstalledProgramsPS.txt
-# In out experience, many installed applications are not listed using that command
+If ( Prepare-Section -Index "16" -Name "Installed applications" ) {
+    # Installed applications according to wmic
+    # This list doesn't include "applets" in the starting menu, nor windows utilities such as the clock
+    Get-WmiObject -Class Win32_Product | Export-Clixml ${SectionPreffix}InstalledApplications.xml
+    # WARNING: you will find in the Internet references to this command.
+    # Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Select-Object DisplayName, DisplayVersion, Publisher, InstallDate | Format-Table –AutoSize > C:\Users\Lori\Documents\InstalledPrograms\InstalledProgramsPS.txt
+    # In our experience, many installed applications are not listed using that command
+}
 
 ####################### Some not implemented sections
 
-$CurrentSection = "17"
-$CurrentSectionName = "$CurrentSection-Link files created"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+Prepare-Section -Index "17" -Name "Link files created" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "18" -Name "Packed files" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "19" -Name "USB related" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "20" -Name "Shadow copies created" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "21" -Name "Prefetch files and timestamps" -Log 'Not implemented' -Run:$false | Out-Null
 
-$CurrentSection = "18"
-$CurrentSectionName = "$CurrentSection-Packed files"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+####################### DNS cache
 
-$CurrentSection = "19"
-$CurrentSectionName = "$CurrentSection-USB related"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+If ( Prepare-Section -Index "22" -Name "DNS cache" ) {
+    # Save the DNS cache
+    Get-DnsClientCache |  Export-Clixml ${SectionPreffix}DnsClientCache.xml
+}
 
-$CurrentSection = "20"
-$CurrentSectionName = "$CurrentSection-Shadow copies created"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+####################### Some not implemented sections
 
-$CurrentSection = "21"
-$CurrentSectionName = "$CurrentSection-Prefetch files and timestamps"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "22"
-$CurrentSectionName = "$CurrentSection-DNS cache"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "23"
-$CurrentSectionName = "$CurrentSection-List of available logs and last write times"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "24"
-$CurrentSectionName = "$CurrentSection-Firewall configuration"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "25"
-$CurrentSectionName = "$CurrentSection-Audit policy"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "26"
-$CurrentSectionName = "$CurrentSection-Temporary Internet filesand cookies"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
-
-$CurrentSection = "27"
-$CurrentSectionName = "$CurrentSection-Typed URLs"
-Write-Host "($CurrentSection/$TotalSections) Not implemented: $CurrentSectionName." -ForegroundColor Yellow
+Prepare-Section -Index "23" -Name "List of available logs and last write times" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "24" -Name "Firewall configuration" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "25" -Name "Audit policy" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "26" -Name "Temporary Internet filesand cookies" -Log 'Not implemented' -Run:$false | Out-Null
+Prepare-Section -Index "27" -Name "Typed URLs" -Log 'Not implemented' -Run:$false | Out-Null
 
 ####################### Important registry keys
 
-$CurrentSection = "28"
-$CurrentSectionName = "$CurrentSection-Important registry keys"
-If ( $ExportHKLM ) {
-    mkdir $CurrentSectionName | Out-Null
-    Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
+If ( Prepare-Section -Index "28" -Name "Important registry keys" -Run:$ExportHKLM ) {
     # The HKEY_LOCAL_MACHINE from the registry
-    Get-ChildItem HKLM: -recurse -ErrorAction Ignore | Export-Clixml $CurrentSectionName\HKLM.xml
+    Get-ChildItem HKLM: -recurse -ErrorAction Ignore | Export-Clixml ${SectionPreffix}HKLM.xml
     # Alternate command
     # C:\windows\system32\reg.exe export HKLM HKLM.txt
-} else {
-    Write-Host "($CurrentSection/$TotalSections) Skipping: $CurrentSectionName." -ForegroundColor Yellow
 }
 
 ####################### File timeline
 
-$CurrentSection = "29"
-$CurrentSectionName = "$CurrentSection-File timeline"
-If ( $ListFiles ) {
-    mkdir $CurrentSectionName | Out-Null
-    Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-    # List all files in the mounted filesystems
-    # TODO: maybe you shouldn't list shared directories?
+If ( Prepare-Section -Index "29" -Name "File timeline" -Run:$ExportMFT ) {
+    # Get the MBR using an external tool
     $drives = (Get-PSDrive).Name -match '^[a-z]$'
-    $drives | ForEach-Object { Get-ChildItem ($_ + ":") -Recurse -Force | Export-Clixml ("$CurrentSectionName\FileList" + $_ + ".xml") }
-} else {
-    Write-Host "($CurrentSection/$TotalSections) Skipping: $CurrentSectionName." -ForegroundColor Yellow
+    $drives | ForEach-Object {
+        If ( Test-Path "../RawCopy.exe" ) {
+            ../RawCopy.exe /FileNamePath:${_}:0 /OutputPath:. /OutputName:${SectionPreffix}MFT_${_}.bin
+        } ElseIf (  Test-Path "../RawCopy.exe" )  {
+            Write-Host "RawCopy or fls not present: MFT for drive $_ not exported" -ForegroundColor Red
+        }
+        # Alternative command: fls.exe. fls MUST be run using cmd.exe to redirect its output correctly!
+        # cmd.exe /c "fls.exe \\.\${_} 0 > ${SectionPreffix}MFT_${_}.bin"
+    }
 }
 
 ####################### Important event logs
 
-$CurrentSection = "30"
-$CurrentSectionName = "$CurrentSection-Important event logs"
-If ( $CollectLogs ) {
-    mkdir $CurrentSectionName | Out-Null
-    Write-Host "($CurrentSection/$TotalSections) Collecting: $CurrentSectionName..."
-    Get-EventLog Application | Export-Clixml $CurrentSectionName\EventLog-Application.xml
-    Get-EventLog Security | Export-Clixml $CurrentSectionName\EventLog-Security.xml
-    Get-EventLog System | Export-Clixml $CurrentSectionName\EventLog-System.xml
-    Get-EventLog "Windows PowerShell" | Export-Clixml $CurrentSectionName\EventLog-PowerShell.xml
+If ( Prepare-Section -Index "30" -Name "Important event logs" -Run:$CollectLogs ) {
+    Get-EventLog Application | Export-Clixml ${SectionPreffix}EventLog-Application.xml
+    Get-EventLog Security | Export-Clixml ${SectionPreffix}EventLog-Security.xml
+    Get-EventLog System | Export-Clixml ${SectionPreffix}EventLog-System.xml
+    Get-EventLog "Windows PowerShell" | Export-Clixml ${SectionPreffix}EventLog-PowerShell.xml
     # This command may include all logs, but it is very slow and triggers many encoding errors
     # Get-WinEvent | Export-Clixml WinEvent.xml
-} else {
-    Write-Host "($CurrentSection/$TotalSections) Skipping: $CurrentSectionName." -ForegroundColor Yellow
 }
 
 ####################### Convert files and create zip
 
-Write-Host "($TotalSections/$TotalSections) Converting files and closing..."
-#Converts all XML files into CSV, for easy greps and rvt2
-Get-ChildItem -File *xml -Recurse | ForEach-Object {Import-Clixml $_ | Export-Csv -NoTypeInformation ($_.FullName + ".csv") }
-# Convert all XML files into human readable lists
-Get-ChildItem -File *xml -Recurse | ForEach-Object {Import-Clixml $_ | Format-List * | Out-File ($_.FullName + ".txt") }
+If ( Prepare-Section -Index $TotalSections -Name "Converting files" ) {
+     #Converts all XML files into CSV, for easy greps and rvt2, and human readable lists
+    Get-ChildItem -File *xml -Recurse | ForEach-Object {
+        Import-Clixml $_ | Export-Csv -NoTypeInformation ($_.FullName + ".csv")
+        Import-Clixml $_ | Format-List * | Out-File ($_.FullName + ".txt")
+    }
+}
+
 # Create ZIP and calculate its hash value
 Set-Location ..
 Compress-Archive -Path $OutputDirectory -DestinationPath $OutputZipFile
