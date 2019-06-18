@@ -31,8 +31,13 @@ param(
     [switch]$ExportHKLM,
     [switch]$ExportMFT,
     [switch]$CollectLogs,
-    [switch]$Complete
+    [switch]$Complete,
+    [string]$RawCopyPath="$PSScriptRoot\RawCopy\RawCopy.exe",
+    [string]$FlsPath="$PSScriptRoot\sleuthkit\bin\fls.exe",
+    [string]$IcatPath="$PSScriptRoot\sleuthkit\bin\icat.exe"
 )
+
+Write-Host $RawCopyPath
 
 # Internal configuration
 
@@ -47,25 +52,6 @@ $OutputDirectory = $EvidenceId
 $OutputZipFile = ( $EvidenceId + ".zip" )
 $OutputHashFile = ( $EvidenceId + ".sha256" )
 $TotalSections = 31
-
-$now = Get-Date
-
-Write-Host "Starting the collection process. Output directory: $OutputDirectory. Date: $now" -ForegroundColor Green
-
-####################### Start the process
-
-# Delete output directories and files if they exist
-Remove-Item $OutputDirectory -Recurse -ErrorAction Ignore
-Remove-Item $OutputZipFile -ErrorAction Ignore
-Remove-Item $OutputHashFile -ErrorAction Ignore
-# Create the output directory and change directory to it
-mkdir $OutputDirectory | Out-Null
-Set-Location $OutputDirectory
-# Metadata: date and current user
-Write-Host $now | Out-File METADATA
-whoami /ALL >> METADATA
-# Alternate command
-# whoami /useraccount >> METADATA
 
 Function Prepare-Section {
     <#
@@ -108,6 +94,25 @@ Function Prepare-Section {
     }
     Return $Run
 }
+
+
+####################### Start the process
+
+$now = Get-Date
+Write-Host "Starting the collection process. Output directory: $OutputDirectory. Date: $now" -ForegroundColor Green
+
+# Delete output directories and files if they exist
+Remove-Item $OutputDirectory -Recurse -ErrorAction Ignore
+Remove-Item $OutputZipFile -ErrorAction Ignore
+Remove-Item $OutputHashFile -ErrorAction Ignore
+# Create the output directory and change directory to it
+mkdir $OutputDirectory | Out-Null
+Set-Location $OutputDirectory
+# Metadata: date and current user
+Write-Output $now | Out-File METADATA
+whoami /ALL >> METADATA
+# Alternate command
+# whoami /useraccount >> METADATA
 
 ####################### Machine and Operating system information
 
@@ -282,13 +287,22 @@ If ( Prepare-Section -Index "29" -Name "File timeline" -Run:$ExportMFT ) {
     # Get the MBR using an external tool
     $drives = (Get-PSDrive).Name -match '^[a-z]$'
     $drives | ForEach-Object {
-        If ( Test-Path "../RawCopy.exe" ) {
-            ../RawCopy.exe /FileNamePath:${_}:0 /OutputPath:. /OutputName:${SectionPreffix}MFT_${_}.bin
-        } ElseIf (  Test-Path "../RawCopy.exe" )  {
-            Write-Host "RawCopy or fls not present: MFT for drive $_ not exported" -ForegroundColor Red
+        If ( Test-Path "$RawCopyPath" ) {
+            # get the MFT using RawCopy.exe
+            Invoke-Expression "${RawCopyPath} /FileNamePath:${_}:0 /OutputPath:. /OutputName:${SectionPreffix}MFT_${_}.rawcopy.bin"
+        } ElseIf (  Test-Path "$IcatPath" )  {
+            # if RawCopy is not found: get the MFT using icat from SleuthKit
+            cmd.exe /c "${IcatPath} \\.\${_}: 0 > ${SectionPreffix}MFT_${_}.icat.bin"
+        } Else {
+            Write-Host "${RawCopyPath} or ${IcatPath} not present: MFT for drive $_ not exported" -ForegroundColor Red
         }
-        # Alternative command: fls.exe. fls MUST be run using cmd.exe to redirect its output correctly!
-        # cmd.exe /c "fls.exe \\.\${_} 0 > ${SectionPreffix}MFT_${_}.bin"
+        # Get the body file using fls from SleuthKit
+        if ( Test-Path "$FlsPath" ) {
+            Write-Host "Collecting body file from volume ${_} using ${FlsPath}. This is going to take a while."
+            cmd.exe /c "${FlsPath} -r -m ${_}: \\.\${_}: > ${SectionPreffix}fls_${_}.body"
+        } Else {
+            Write-Host "${FlsPath} not present: body file for drive $_ not exported" -ForegroundColor Red
+        }
     }
 }
 
