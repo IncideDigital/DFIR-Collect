@@ -7,8 +7,8 @@
    This script needs at lesat PowerShell 2.0 (Windows 10)
 .PARAMETER EvidenceId
    A string identifying the evidence. The output directory and zip file will have this name. Default: "evidence"
-.PARAMETER ExportHKLM
-   Export HKEY_LOCAL_MACHINE from the registry.
+.PARAMETER ExportRegistry
+   Export HKEY_LOCAL_MACHINE and HKEY_CURRENT_USER from the registry.
 .PARAMETER ExportMFT
    Export the MFT of all partitions. RawCopy.exe must be present alongside this script.
 .PARAMETER CollectLogs
@@ -28,7 +28,7 @@
 # Configuration parameters from the command line
 param(
     [string]$EvidenceId="evidence",
-    [switch]$ExportHKLM,
+    [switch]$ExportRegistry,
     [switch]$ExportMFT,
     [switch]$CollectLogs,
     [switch]$Complete,
@@ -43,7 +43,7 @@ Write-Host $RawCopyPath
 
 # If complete, activate these sections
 if ( $Complete ) {
-    $ExportHKLM = $true
+    $ExportRegistry = $true
     $ExportMFT = $true
     $CollectLogs = $true
 }
@@ -119,6 +119,8 @@ whoami /ALL >> METADATA
 If ( Prepare-Section -Index "01" -Name "Machine and Operating system information" ) {
     # Basic system information
     Get-CimInstance Win32_OperatingSystem | Export-Clixml ${SectionPreffix}OperatingSystem.xml
+    # Environment vars
+    Get-ChildItem env: | Export-Clixml ${SectionPreffix}EnvironmentVars.xml
     # Windows product key
     (Get-WmiObject -query ‘select * from SoftwareLicensingService’).OA3xOriginalProductKey | Out-File ${SectionPreffix}OriginalProductKey.txt
 }
@@ -274,9 +276,11 @@ Prepare-Section -Index "27" -Name "Typed URLs" -Log 'Not implemented' -Run:$fals
 
 ####################### Important registry keys
 
-If ( Prepare-Section -Index "28" -Name "Important registry keys" -Run:$ExportHKLM ) {
+If ( Prepare-Section -Index "28" -Name "Important registry keys" -Run:$ExportRegistry ) {
     # The HKEY_LOCAL_MACHINE from the registry
     Get-ChildItem HKLM: -recurse -ErrorAction Ignore | Export-Clixml ${SectionPreffix}HKLM.xml
+    # The HKEY_CURRENT_USER from the registry
+    Get-ChildItem HKCU: -recurse -ErrorAction Ignore | Export-Clixml ${SectionPreffix}HKCU.xml
     # Alternate command
     # C:\windows\system32\reg.exe export HKLM HKLM.txt
 }
