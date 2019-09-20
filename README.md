@@ -5,7 +5,7 @@ Get information about the Windows 10 system to perform a DFIR analysis.
 On systems with a restricted script execution policy, run:
 
 ```
-PowerShell.exe -ExecutionPolicy UnRestricted -File .\dfircollect.ps1
+PowerShell.exe -ExecutionPolicy UnRestricted -File .\DFIR-Collect-W10.ps1
 ```
 
 This script needs at lesat PowerShell 2.0 (Windows 10)
