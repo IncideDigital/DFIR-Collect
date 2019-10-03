@@ -173,7 +173,18 @@ If ( Prepare-Section -Index "03" -Name "Network configuration and connectivity i
 
 ####################### Antivirus
 
-Prepare-Section -Index "04" -Name "Anti-Virus application status and related logs" -Log 'Not implemented' -Run:$false | Out-Null
+#Prepare-Section -Index "04" -Name "Anti-Virus application status and related logs" -Log 'Not implemented' -Run:$false | Out-Null
+
+If ( Prepare-Section -Index "04" -Name "Anti-Virus application status and related logs" ) {
+    # AdwCleaner / Malwarebytes Logs and Quarantine
+    if ( Test-Path -Path "C:\AdwCleaner" ) { Copy-Item "C:\AdwCleaner" ${SectionPreffix}AdwCleaner -Recurse }
+    # McAfee. Log locations of several versions
+    if ( Test-Path -Path "C:\${ProgramData}\McAfee\DesktopProtection\Logs" ) { Copy-Item "C:\${ProgramData}\McAfee\DesktopProtection\Logs" ${SectionPreffix}McAfee\DesktopProtection\Logs -Recurse -Force }
+    if ( Test-Path -Path "C:\${ProgramData}\McAfee\Endpoint Security\Logs" ) { Copy-Item "C:\${ProgramData}\McAfee\Endpoint Security\Logs" ${SectionPreffix}McAfee\Endpoint Security\Logs -Recurse -Force }
+    if ( Test-Path -Path "C:\${ProgramData}\McAfee\VirusScan" ) { Copy-Item "C:\${ProgramData}\McAfee\VirusScan" ${SectionPreffix}McAfee\VirusScan -Recurse -Force }
+    if ( Test-Path -Path "C:\${ProgramData}\McAfee\MCLOGS" ) { Copy-Item "C:\${ProgramData}\McAfee\MCLOGS" ${SectionPreffix}McAfee\MCLOGS -Recurse -Force }
+    if ( Test-Path -Path "C:\${ProgramData}\McAfee\msc\Logs" ) { Copy-Item "C:\${ProgramData}\McAfee\msc\Logs" ${SectionPreffix}McAfee\msc\Logs -Recurse -Force }
+}
 
 ####################### Services, process and applications
 
