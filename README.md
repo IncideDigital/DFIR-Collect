@@ -15,7 +15,7 @@ This script needs at least PowerShell 2.0 (Windows 10)
 
 Under the GPL license.
 
-(c) 2019, Juan Vera (juanvvc@gmail.com)
+(c) 2019-2020, INCIDE Digital Data S.L. (tecnico@incide.es)
 
 # Install
 
