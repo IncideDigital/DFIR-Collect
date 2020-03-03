@@ -8,7 +8,7 @@ On systems with a restricted script execution policy, run:
 PowerShell.exe -ExecutionPolicy UnRestricted -File .\DFIR-Collect-W10.ps1
 ```
 
-This script needs at lesat PowerShell 2.0 (Windows 10)
+This script needs at least PowerShell 2.0 (Windows 10)
 
 - Based on:  Sajeev Nair "Live Response Using PowerShell", SANS Institute 2013. <https://www.sans.org/reading-room/whitepapers/forensics/live-response-powershell-34302>
 - Updated to out own needs.
